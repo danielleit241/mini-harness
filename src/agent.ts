@@ -2,7 +2,7 @@ import type { Message } from "@aws-sdk/client-bedrock-runtime";
 import { converse } from "./bedrock.js";
 import { toBedrockTools, executeTool } from "./tools/index.js";
 
-const SYSTEM_PROMPT = `You are a coding assistant running in a terminal, with access to tools \
+export const DEFAULT_SYSTEM_PROMPT = `You are a coding assistant running in a terminal, with access to tools \
 for reading/writing files and running shell commands in the current working directory. \
 Use tools when you need information you don't already have or need to make a change; \
 otherwise just answer directly. Be concise.`;
@@ -13,7 +13,11 @@ const TOOLS = toBedrockTools();
 // loop forever, burning API calls with no way to interrupt it.
 const MAX_TOOL_ITERATIONS = 25;
 
-export async function runAgent(messages: Message[], userInput: string): Promise<string> {
+export async function runAgent(
+  messages: Message[],
+  userInput: string,
+  systemPrompt: string = DEFAULT_SYSTEM_PROMPT
+): Promise<string> {
   // Bedrock requires messages to strictly alternate user/assistant. If
   // anything below throws partway through a tool-use round, the array can
   // be left ending in a "user" message, which would break every future call
@@ -24,7 +28,7 @@ export async function runAgent(messages: Message[], userInput: string): Promise<
 
   try {
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-      const { message, stopReason } = await converse(messages, SYSTEM_PROMPT, TOOLS);
+      const { message, stopReason } = await converse(messages, systemPrompt, TOOLS);
       messages.push(message);
 
       const toolUseBlocks = (message.content ?? []).filter((b) => b.toolUse);
