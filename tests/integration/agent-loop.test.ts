@@ -82,4 +82,132 @@ describe("runAgent", () => {
     await expect(runAgent(messages, "fail this turn")).rejects.toBe(error);
     expect(messages).toEqual(before);
   });
+
+  it("emits tool_round_start, tool_result, and text events in order", async () => {
+    mockedConverse
+      .mockResolvedValueOnce(
+        response(
+          [
+            {
+              toolUse: {
+                toolUseId: "tool-1",
+                name: "read_file",
+                input: { path: "README.md" },
+              },
+            },
+          ],
+          "tool_use"
+        )
+      )
+      .mockResolvedValueOnce(response([{ text: "I read it." }]));
+    const messages: never[] = [];
+    const events: unknown[] = [];
+
+    await runAgent(messages, "inspect the readme", undefined, (e) => events.push(e));
+
+    expect(events).toEqual([
+      { type: "tool_round_start", iteration: 1, tools: ["read_file"] },
+      { type: "tool_result", iteration: 1, name: "read_file", status: "success" },
+      { type: "text", text: "I read it." },
+    ]);
+  });
+
+  it("emits an error status tool_result event when a tool call fails", async () => {
+    mockedConverse
+      .mockResolvedValueOnce(
+        response(
+          [{ toolUse: { toolUseId: "tool-1", name: "missing_tool", input: {} } }],
+          "tool_use"
+        )
+      )
+      .mockResolvedValueOnce(response([{ text: "done" }]));
+    const messages: never[] = [];
+    const events: unknown[] = [];
+
+    await runAgent(messages, "call a bad tool", undefined, (e) => events.push(e));
+
+    expect(events).toEqual([
+      { type: "tool_round_start", iteration: 1, tools: ["missing_tool"] },
+      { type: "tool_result", iteration: 1, name: "missing_tool", status: "error" },
+      { type: "text", text: "done" },
+    ]);
+  });
+
+  it("emits one tool_result per tool call, in call order, for a multi-tool round", async () => {
+    mockedConverse
+      .mockResolvedValueOnce(
+        response(
+          [
+            {
+              toolUse: {
+                toolUseId: "tool-1",
+                name: "read_file",
+                input: { path: "README.md" },
+              },
+            },
+            { toolUse: { toolUseId: "tool-2", name: "list_dir", input: { path: "." } } },
+          ],
+          "tool_use"
+        )
+      )
+      .mockResolvedValueOnce(response([{ text: "done" }]));
+    const messages: never[] = [];
+    const events: unknown[] = [];
+
+    await runAgent(messages, "run two tools", undefined, (e) => events.push(e));
+
+    expect(events).toEqual([
+      { type: "tool_round_start", iteration: 1, tools: ["read_file", "list_dir"] },
+      { type: "tool_result", iteration: 1, name: "read_file", status: "success" },
+      { type: "tool_result", iteration: 1, name: "list_dir", status: "success" },
+      { type: "text", text: "done" },
+    ]);
+  });
+
+  it("does not lose a successful turn's history when onEvent throws", async () => {
+    mockedConverse.mockResolvedValue(response([{ text: "hello" }]));
+    const messages: never[] = [];
+    const onEvent = () => {
+      throw new Error("handler blew up");
+    };
+
+    await expect(runAgent(messages, "hi", undefined, onEvent)).resolves.toBe("hello");
+    expect(messages).toHaveLength(2);
+  });
+
+  it("returns the same result with and without onEvent for the same tool-use turn", async () => {
+    const round = () => [
+      response(
+        [
+          {
+            toolUse: {
+              toolUseId: "tool-1",
+              name: "read_file",
+              input: { path: "README.md" },
+            },
+          },
+        ],
+        "tool_use"
+      ),
+      response([{ text: "I read it." }]),
+    ];
+
+    mockedConverse.mockReset();
+    mockedConverse.mockResolvedValueOnce(round()[0]).mockResolvedValueOnce(round()[1]);
+    const withoutHandler: never[] = [];
+    const resultWithout = await runAgent(withoutHandler, "inspect the readme");
+
+    mockedConverse.mockReset();
+    mockedConverse.mockResolvedValueOnce(round()[0]).mockResolvedValueOnce(round()[1]);
+    const withHandler: never[] = [];
+    const resultWith = await runAgent(
+      withHandler,
+      "inspect the readme",
+      undefined,
+      () => {}
+    );
+
+    expect(resultWith).toBe(resultWithout);
+    expect(withHandler).toEqual(withoutHandler);
+  });
 });

@@ -14,10 +14,28 @@ const TOOLS = toBedrockTools();
 // loop forever, burning API calls with no way to interrupt it.
 const MAX_TOOL_ITERATIONS = 25;
 
+export type AgentEvent =
+  | { type: "tool_round_start"; iteration: number; tools: string[] }
+  | { type: "tool_result"; iteration: number; name: string; status: "success" | "error" }
+  | { type: "text"; text: string };
+
+export type AgentEventHandler = (event: AgentEvent) => void;
+
+// A handler that throws must never abort an otherwise-successful turn (it
+// would trigger the same rollback as a real Bedrock/tool failure below).
+function emit(onEvent: AgentEventHandler | undefined, event: AgentEvent): void {
+  try {
+    onEvent?.(event);
+  } catch (err) {
+    logger.warn({ err }, "agent event handler threw");
+  }
+}
+
 export async function runAgent(
   messages: Message[],
   userInput: string,
-  systemPrompt: string = DEFAULT_SYSTEM_PROMPT
+  systemPrompt: string = DEFAULT_SYSTEM_PROMPT,
+  onEvent?: AgentEventHandler
 ): Promise<string> {
   // Bedrock requires messages to strictly alternate user/assistant. If
   // anything below throws partway through a tool-use round, the array can
@@ -32,33 +50,49 @@ export async function runAgent(
       const { message, stopReason } = await converse(messages, systemPrompt, TOOLS);
       messages.push(message);
 
-      const toolUseBlocks = (message.content ?? []).filter((b) => b.toolUse);
+      // Narrows out blocks without a toolUse so downstream code never
+      // needs a non-null assertion on `block.toolUse`.
+      const toolUses = (message.content ?? []).flatMap((b) =>
+        b.toolUse ? [b.toolUse] : []
+      );
 
-      if (stopReason === "tool_use" && toolUseBlocks.length > 0) {
+      if (stopReason === "tool_use" && toolUses.length > 0) {
+        const toolNames = toolUses.map((use) => use.name ?? "unknown_tool");
         logger.info(
-          {
-            iteration: i + 1,
-            tools: toolUseBlocks.map((block) => block.toolUse?.name),
-          },
+          { iteration: i + 1, tools: toolNames },
           "agent tool-use round started"
         );
+        emit(onEvent, { type: "tool_round_start", iteration: i + 1, tools: toolNames });
 
         // Sequential, not Promise.all: permission prompts share one readline
         // interface and are clearer to the user one at a time.
         const resultBlocks = [];
-        for (const block of toolUseBlocks) {
-          const { toolUseId, name, input } = block.toolUse!;
-          resultBlocks.push(await executeTool(name!, input, toolUseId!));
+        for (const use of toolUses) {
+          const name = use.name ?? "unknown_tool";
+          const result = await executeTool(name, use.input, use.toolUseId!);
+          resultBlocks.push(result);
+          emit(onEvent, {
+            type: "tool_result",
+            iteration: i + 1,
+            name,
+            status: result.toolResult?.status === "error" ? "error" : "success",
+          });
         }
         messages.push({ role: "user", content: resultBlocks });
         continue; // give the model the results and let it decide what's next
       }
 
       logger.info({ stopReason, iteration: i + 1 }, "agent turn completed");
-      return (message.content ?? [])
+      const text = (message.content ?? [])
         .map((b) => b.text)
         .filter((t): t is string => Boolean(t))
         .join("\n");
+      // `text` mirrors the resolved return value, not additional content —
+      // a consumer that prints both the event and the return value would
+      // double-print. No terminal event is emitted on the error/rollback
+      // path (see catch below): a `tool_round_start` may go unmatched.
+      emit(onEvent, { type: "text", text });
+      return text;
     }
 
     throw new Error(

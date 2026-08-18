@@ -26,7 +26,7 @@
 
 ## Agent, tools, and safety boundaries
 
-`runAgent(messages, userInput, systemPrompt?)` appends the user message, calls Bedrock, processes sequential `tool_use` rounds, then returns joined text. It resets `messages` to its pre-turn length on any failure, preserving Bedrock's required role alternation.
+`runAgent(messages, userInput, systemPrompt?, onEvent?)` appends the user message, calls Bedrock, processes sequential `tool_use` rounds, then returns joined text. It resets `messages` to its pre-turn length on any failure, preserving Bedrock's required role alternation. The optional `onEvent` callback receives `tool_round_start`/`tool_result`/`text` events as the loop progresses, so a caller can render tool progress live instead of waiting for the final return value; a throwing handler is caught and logged, never allowed to roll back an otherwise-successful turn. `src/cli/index.ts` uses it to print `→ running: <tools>` / `✓`/`✗` lines during a tool-use round.
 
 `src/core/tools/index.ts` exposes the registry as Bedrock tools and turns unknown tools, denied requests, and tool failures into `toolResult` error blocks. `read_file` and `list_dir` are read-only; `write_file` and `run_command` require permission.
 

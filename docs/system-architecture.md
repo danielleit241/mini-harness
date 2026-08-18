@@ -31,7 +31,7 @@ The core does not import `src/cli/` or tests. `prompt.ts` is core because both t
 1. `src/cli/index.ts` calls `validateConfig(process.env)`, prints returned warnings to stderr, and reads input through `core/prompt.ts`.
 2. It passes the shared message array to `runAgent()`.
 3. The agent adds the user message and calls `converse()`. A `tool_use` response is dispatched sequentially through `executeTool()` so permission prompts cannot interleave.
-4. Tool results are appended as one user message; the loop repeats until text is returned or the 25-round cap is reached.
+4. Tool results are appended as one user message; the loop repeats until text is returned or the 25-round cap is reached. The CLI passes an `onEvent` handler so it can print a progress line per tool call while the round runs, before the final reply prints.
 5. A failed turn resets message history to its pre-turn length before rethrowing; the CLI prints the error and continues its REPL.
 
 ## Security boundaries
