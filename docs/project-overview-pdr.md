@@ -2,123 +2,59 @@
 
 ## What it is
 
-`mini-harness` is a CLI coding agent: a REPL that loops user messages
-against AWS Bedrock's Converse API (Anthropic Claude models), giving the
-model tools to read/write files and run shell commands in the current
-working directory, gated by a permission prompt for anything that mutates
-state and confined to that directory by a path sandbox.
-
-It is scoped and built as a real, standalone tool. Its security boundaries
-— the working-directory sandbox (`resolveInWorkdir`) and the permission
-gate (`checkPermission`) — are first-class product requirements, not
-optional polish: they are what make it safe to hand an LLM the ability to
-write files and run shell commands at all. Contributions are held to that
-standard: correctness, safety, and clean error handling take priority over
-adding surface area.
-
-## Problem statement
-
-Giving an LLM the ability to read/write files and run shell commands is
-only safe if two things hold: the model's tool access is confined to a
-known directory, and anything that mutates state requires explicit human
-approval before it executes. `mini-harness` implements a Bedrock Converse
-tool-use loop with both of those guarantees built in from the start, in a
-codebase small enough to audit in full.
+`mini-harness` is a local CLI coding agent. Its REPL sends user messages to AWS Bedrock's Converse API and gives the model filesystem and shell tools. File access is confined to the working directory, while state-changing actions require an explicit permission decision.
 
 ## Goals
 
-- Implement a correct, reliable agent loop against Bedrock's Converse API
-  with tool use (`src/agent.ts`, `src/bedrock.ts`), including safe
-  recovery from mid-turn errors.
-- Provide a working set of tools (file read/write/list, shell exec) the
-  model can use to accomplish real tasks in a directory.
-- Gate every state-mutating tool call behind an explicit user permission
-  prompt, scoped to the exact call rather than the whole tool — this is a
-  hard requirement, not a default that may be relaxed.
-- Keep tool access sandboxed to the working directory the process was
-  started in, with both lexical and symlink-escape checks.
-- Keep the codebase auditable: small, single-purpose modules with no
-  hidden control flow.
+- Provide a reliable Bedrock tool-use loop with valid conversation-history recovery.
+- Read, list, and write files and run shell commands in the current working directory.
+- Require per-call human approval for `write_file` and `run_command`.
+- Maintain filesystem containment against lexical and symlink escapes.
+- Keep the core independently testable and observable without expanding into a hosted service.
 
 ## Non-goals
 
-- Not a multi-model or multi-provider harness — Bedrock/Anthropic only, by
-  design.
-- Not a full OS-level sandbox — the containment in `tools/fs.ts` blocks
-  lexical and symlink path escapes at the filesystem-tool boundary; it is
-  not process isolation, and `run_command` relies on the permission gate
-  rather than path containment. This is a documented boundary, not an
-  oversight (see `docs/system-architecture.md`).
-- No persistence across process runs — conversation history lives only in
-  the `messages` array for the life of the REPL process.
-- No deployment target — this is a local CLI tool, run via `npm start`;
-  it is not intended to run as a hosted service.
-- No parallel tool execution — tool calls in one turn run sequentially
-  because permission prompts share a single readline interface. This is a
-  deliberate correctness/clarity trade-off, not a performance gap to fix.
-
-## Users
-
-Whoever runs `npm start` locally with AWS Bedrock access configured. No
-multi-user, multi-tenant, or hosted use case exists or is planned.
+- Multi-provider or hosted, multi-user operation.
+- OS-level sandboxing. `run_command` is intentionally powerful and protected by the permission gate rather than process isolation.
+- Persistent conversation history or parallel tool calls.
 
 ## Functional requirements
 
-| Requirement | Status | Where |
-|---|---|---|
-| REPL reads user input, prints agent replies | Done | `src/index.ts` |
-| Agent loop calls Bedrock Converse, executes tool_use blocks, loops until text-only reply | Done | `src/agent.ts` |
-| Iteration cap prevents infinite tool-call loops | Done | `src/agent.ts` (`MAX_TOOL_ITERATIONS = 25`) |
-| Conversation history rolled back on error to preserve Bedrock's strict role alternation | Done | `src/agent.ts` |
-| Read/list files relative to CWD, no permission needed | Done | `src/tools/fs.ts` |
-| Write files relative to CWD, permission required | Done | `src/tools/fs.ts` |
-| Run shell commands, permission required, timeout + output cap, kills full process tree on timeout | Done | `src/tools/bash.ts` |
-| Path containment: block `..`/absolute escapes and symlink escapes | Done | `src/tools/fs.ts` (`resolveInWorkdir`) |
-| Permission prompt with y/always/no, always-approval scoped to exact call | Done | `src/permissions.ts` |
-| `/exit` and Ctrl+D (EOF) both exit cleanly | Done | `src/index.ts`, `src/prompt.ts` |
+| Requirement | Status | Implementation |
+| --- | --- | --- |
+| REPL input/output, `/exit`, EOF handling, and startup warnings | Done | `src/cli/index.ts` |
+| Bedrock tool-use loop, 25-round safety cap, and history rollback | Done | `src/core/agent.ts` |
+| Bedrock Converse call with transient-error retry/backoff | Done | `src/core/bedrock.ts` |
+| Non-blocking warnings for malformed supplied region/model configuration | Done | `src/core/config.ts` |
+| Shared structured core logging | Done | `src/core/logger.ts` |
+| Exact-call, session-scoped permission approvals | Done | `src/core/permissions.ts` |
+| Read/list/write filesystem tools with lexical and symlink containment | Done | `src/core/tools/fs.ts` |
+| Permission-gated shell command with output cap and process-tree timeout kill | Done | `src/core/tools/bash.ts` |
+| Automated unit/integration tests and CI verification | Done | `tests/`, `.github/workflows/ci.yml` |
 
 ## Non-functional requirements
 
-- **Security boundary: filesystem sandbox**: every filesystem tool must
-  resolve paths through `resolveInWorkdir()`, which blocks both lexical
-  (`..`, absolute path) and symlink-based escapes from the working
-  directory. This is a required invariant, not a best-effort check.
-- **Security boundary: permission gate**: every state-mutating tool
-  (`write_file`, `run_command`) must go through `checkPermission()`
-  before executing, with "always" approval scoped to the exact call, not
-  the tool. No new mutating tool may bypass this gate.
-- **Correctness over throughput**: tool calls run sequentially, not in
-  parallel, to keep permission prompts unambiguous to the user.
-- **Fail-safe permissions**: if stdin closes mid-prompt, permission is
-  denied rather than assumed granted (`src/permissions.ts`).
-- **No silent corruption of conversation state**: any error during a turn
-  rolls the `messages` array back to its state before that turn started,
-  preserving Bedrock's required strict user/assistant alternation.
-- **Type safety**: TypeScript `strict: true`; `npm run typecheck` must
-  pass with zero errors before any change is considered complete.
+- **Filesystem containment**: all filesystem tool paths use `resolveInWorkdir()`, which blocks lexical and symlink-based escapes.
+- **Permission safety**: a closed stdin denies permission; `always` approval applies only to the exact `toolName:JSON(input)` call during the current process.
+- **Conversation integrity**: any turn failure restores its starting message-history length.
+- **Reliability**: only known transient Bedrock failures retry; the default permits at most four attempts with capped exponential backoff and jitter.
+- **Observability**: Pino writes structured logs to stderr. Full tool inputs, outputs, and permission responses remain debug-only.
+- **Verification**: `npm run typecheck`, `npm test`, and `npm run format:check` must pass; CI runs those checks on pushes and pull requests.
 
 ## Acceptance criteria
 
-- `npm start` launches a working REPL against a configured Bedrock model.
-- The model can read a file, list a directory, write a file (with
-  permission prompt), and run a shell command (with permission prompt) in
-  the current working directory.
-- A denied permission or a tool error does not crash the REPL — it's
-  reported back to the model or user and the loop continues.
-- `npm run typecheck` passes with no errors.
+- `npm start` launches the REPL and displays relevant configuration warnings before input.
+- The agent can read/list files and can write files or execute commands only after permission.
+- Tool errors and denied permissions become model-visible tool results without crashing the REPL.
+- Transient Bedrock failures retry according to the implemented policy; other failures surface immediately.
+- The quality commands pass locally and in CI.
 
-## Constraints & dependencies
+## Constraints and dependencies
 
-- Requires AWS Bedrock access and a valid inference-profile model id (see
-  `.env.example` and the root `README.md`).
-- Depends on `@aws-sdk/client-bedrock-runtime` for the Converse API; `tsx`
-  for running TypeScript directly without a build step.
-- Node ESM only (`type: "module"` in `package.json`).
+- Requires AWS Bedrock access and a valid inference-profile model ID for successful model calls.
+- AWS credentials are resolved by the AWS SDK credential provider chain.
+- Uses Node ESM, the AWS Bedrock Runtime SDK, Pino, and Vitest.
 
-## Production-readiness gaps
+## Production-hardening status
 
-Tracked in detail in `docs/project-roadmap.md`. Summary: no automated test
-suite, no CI pipeline, no structured logging, no retry/backoff on Bedrock
-API calls, and no startup-time validation of required environment
-variables. These are treated as gaps to close, not deferred polish —
-`docs/project-roadmap.md` orders them by risk.
+The production-hardening plan is complete for the local-CLI scope: core/CLI separation, Vitest coverage, CI, structured logging, retry/backoff, and startup configuration warnings are all implemented. The warnings deliberately do not validate credentials or model access because doing so would require an AWS interaction.

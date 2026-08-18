@@ -4,3 +4,6 @@ plans/
 docs/
 .hs.json
 .mcp.json
+
+.claude/
+.codex/

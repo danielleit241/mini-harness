@@ -1,5 +1,6 @@
 import type { Message } from "@aws-sdk/client-bedrock-runtime";
 import { converse } from "./bedrock.js";
+import { logger } from "./logger.js";
 import { toBedrockTools, executeTool } from "./tools/index.js";
 
 export const DEFAULT_SYSTEM_PROMPT = `You are a coding assistant running in a terminal, with access to tools \
@@ -34,6 +35,14 @@ export async function runAgent(
       const toolUseBlocks = (message.content ?? []).filter((b) => b.toolUse);
 
       if (stopReason === "tool_use" && toolUseBlocks.length > 0) {
+        logger.info(
+          {
+            iteration: i + 1,
+            tools: toolUseBlocks.map((block) => block.toolUse?.name),
+          },
+          "agent tool-use round started"
+        );
+
         // Sequential, not Promise.all: permission prompts share one readline
         // interface and are clearer to the user one at a time.
         const resultBlocks = [];
@@ -45,6 +54,7 @@ export async function runAgent(
         continue; // give the model the results and let it decide what's next
       }
 
+      logger.info({ stopReason, iteration: i + 1 }, "agent turn completed");
       return (message.content ?? [])
         .map((b) => b.text)
         .filter((t): t is string => Boolean(t))

@@ -1,4 +1,5 @@
 import { exec, type ChildProcess } from "node:child_process";
+import { logger } from "../logger.js";
 import type { ToolDefinition } from "./types.js";
 
 const TIMEOUT_MS = 30_000;
@@ -73,13 +74,25 @@ export const runCommandTool: ToolDefinition = {
   },
   requiresPermission: true,
   async execute(input: { command: string }): Promise<string> {
+    const startedAt = Date.now();
+    logger.debug({ tool: "run_command", input }, "tool input");
     const { output, timedOut, error } = await runCommand(input.command);
-    if (timedOut) {
-      return `Command timed out after ${TIMEOUT_MS / 1000}s and was killed.\n${output}`.trim();
-    }
-    if (error) {
-      return `Command failed: ${error.message}\n${output}`.trim();
-    }
-    return output.trim() || "(no output)";
+    const success = !timedOut && !error;
+    const result = timedOut
+      ? `Command timed out after ${TIMEOUT_MS / 1000}s and was killed.\n${output}`.trim()
+      : error
+        ? `Command failed: ${error.message}\n${output}`.trim()
+        : output.trim() || "(no output)";
+    logger.debug({ tool: "run_command", input, output: result }, "tool output");
+    logger.info(
+      {
+        tool: "run_command",
+        success,
+        durationMs: Date.now() - startedAt,
+        ...(error ? { errorName: error.name, errorMessage: error.message } : {}),
+      },
+      "tool execution completed"
+    );
+    return result;
   },
 };

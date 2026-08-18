@@ -8,7 +8,7 @@ access to the working directory.
 
 ## Requirements
 
-- Node.js (ESM, `type: "module"`)
+- Node.js 22.3+ (ESM, `type: "module"`)
 - An AWS account with Bedrock model access enabled in your target region
 - AWS credentials available via the standard SDK credential chain (env
   vars, `~/.aws/credentials` profile, SSO, etc.)
@@ -22,11 +22,15 @@ cp .env.example .env
 
 Edit `.env`:
 
-| Variable | Required | Default | Notes |
-|---|---|---|---|
-| `AWS_REGION` | no | `us-east-1` | Region with Bedrock model access |
-| `BEDROCK_MODEL_ID` | no | `anthropic.claude-3-5-sonnet-20241022-v2:0` | Must be an inference-profile id (e.g. `global.anthropic.claude-sonnet-4-5-20250929-v1:0`), not a bare model id — see below |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | no | — | Only needed if not using the default credential chain |
+| Variable                                                            | Required | Default                                     | Notes                                                                                                                     |
+| ------------------------------------------------------------------- | -------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `AWS_REGION`                                                        | no       | `us-east-1`                                 | Region with Bedrock model access; startup warns on an implausible format                                                  |
+| `BEDROCK_MODEL_ID`                                                  | no       | `anthropic.claude-3-5-sonnet-20241022-v2:0` | Prefer an inference-profile id (e.g. `global.anthropic.claude-sonnet-4-5-20250929-v1:0`), not a bare model id — see below |
+| `LOG_LEVEL`                                                         | no       | `info`                                      | Pino verbosity; use `debug` to opt into tool payload details                                                              |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` | no       | —                                           | Only needed if not using the default credential chain                                                                     |
+
+Startup validation warns about a bare model id or implausible region before
+input is accepted. It does not make a network request or validate credentials.
 
 ### Checking available models
 
@@ -43,9 +47,14 @@ you have available with the AWS CLI or SDK against the
 npm start
 ```
 
-This runs `node --env-file=.env --import tsx src/index.ts` — a REPL that
+This runs `node --env-file=.env --import tsx src/cli/index.ts` — a REPL that
 reads a line, sends it to the agent loop, and prints the reply. Type
 `/exit` or press Ctrl+D to quit.
+
+Structured core audit logs are emitted as JSON lines by pino. Conversational
+REPL output remains plain terminal text; at the default `info` level, logs
+contain tool names, outcomes, timing, permission decisions, and retry/error
+metadata, not file or conversation payloads.
 
 The agent may ask for permission before writing files or running shell
 commands:
@@ -56,17 +65,17 @@ commands:
   Allow? [y]es once / [a]lways this exact call / [n]o:
 ```
 
-`a` (always) only re-approves an *identical* future call (same tool name +
+`a` (always) only re-approves an _identical_ future call (same tool name +
 same JSON input) — it does not grant blanket approval for the tool.
 
 ## Available tools
 
-| Tool | Permission required | Description |
-|---|---|---|
-| `read_file` | no | Read a text file, path relative to CWD |
-| `list_dir` | no | List entries in a directory, path relative to CWD |
-| `write_file` | yes | Create or overwrite a file, path relative to CWD |
-| `run_command` | yes | Run a shell command in CWD (30s timeout, 10MB output cap) |
+| Tool          | Permission required | Description                                               |
+| ------------- | ------------------- | --------------------------------------------------------- |
+| `read_file`   | no                  | Read a text file, path relative to CWD                    |
+| `list_dir`    | no                  | List entries in a directory, path relative to CWD         |
+| `write_file`  | yes                 | Create or overwrite a file, path relative to CWD          |
+| `run_command` | yes                 | Run a shell command in CWD (30s timeout, 10MB output cap) |
 
 All file paths are resolved and sandboxed to the directory the harness was
 started in — see [`docs/system-architecture.md`](./docs/system-architecture.md)
@@ -74,29 +83,40 @@ for the containment details.
 
 ## Scripts
 
-| Script | Command | Purpose |
-|---|---|---|
-| `npm start` | `node --env-file=.env --import tsx src/index.ts` | Run the REPL |
-| `npm run typecheck` | `tsc --noEmit` | Type-check without emitting |
-| `npm run format` | `prettier --write .` | Format the codebase |
-| `npm run format:check` | `prettier --check .` | Check formatting |
+| Script                 | Command                                              | Purpose                                      |
+| ---------------------- | ---------------------------------------------------- | -------------------------------------------- |
+| `npm start`            | `node --env-file=.env --import tsx src/cli/index.ts` | Run the REPL                                 |
+| `npm run typecheck`    | `tsc --noEmit`                                       | Type-check source and tests without emitting |
+| `npm test`             | `vitest run`                                         | Run the one-shot test suite                  |
+| `npm run test:watch`   | `vitest`                                             | Run Vitest in watch mode for development     |
+| `npm run format`       | `prettier --write .`                                 | Format the codebase                          |
+| `npm run format:check` | `prettier --check .`                                 | Check formatting                             |
 
-There is no test suite or CI configured yet.
+GitHub Actions runs typecheck, format:check, and test on every push and pull
+request.
 
 ## Project layout
 
 ```
 src/
-  index.ts        REPL entry point
-  agent.ts         Tool-use loop (runAgent)
-  bedrock.ts        Bedrock Converse API wrapper
-  permissions.ts     Permission gate for mutating tools
-  prompt.ts           Shared readline interface
-  tools/
-    types.ts          ToolDefinition interface
-    index.ts           Tool registry + dispatch
-    fs.ts               read_file / list_dir / write_file
-    bash.ts             run_command
+  cli/
+    index.ts          REPL entry point and user-facing output
+  core/
+    agent.ts          Tool-use loop (runAgent)
+    bedrock.ts        Bedrock Converse API wrapper and retry policy
+    config.ts         Startup configuration validation
+    logger.ts         Structured pino audit logger
+    permissions.ts    Permission gate for mutating tools
+    prompt.ts         Shared readline interface
+    tools/
+      types.ts        ToolDefinition interface
+      index.ts        Tool registry + dispatch
+      fs.ts           read_file / list_dir / write_file
+      bash.ts         run_command
+
+tests/
+  unit/               Security-boundary, retry, and config tests
+  integration/        Mocked Bedrock agent-loop tests
 ```
 
 See [`docs/system-architecture.md`](./docs/system-architecture.md) for how

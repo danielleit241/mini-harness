@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { logger } from "../logger.js";
 import type { ToolDefinition } from "./types.js";
 
 const WORKDIR = process.cwd();
@@ -17,7 +18,7 @@ function realWorkdir(): Promise<string> {
 // ancestor (blocks a symlink inside WORKDIR that points outside it — the
 // lexical check alone can't catch that, since it never touches the
 // filesystem).
-async function resolveInWorkdir(relativePath: string): Promise<string> {
+export async function resolveInWorkdir(relativePath: string): Promise<string> {
   const resolved = path.resolve(WORKDIR, relativePath);
   if (resolved !== WORKDIR && !resolved.startsWith(WORKDIR + path.sep)) {
     throw new Error(`Path "${relativePath}" escapes the working directory`);
@@ -36,6 +37,23 @@ async function resolveInWorkdir(relativePath: string): Promise<string> {
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+
+      // A dangling symlink has no realpath, but lstat still exposes the link.
+      // Resolve its target before walking parents so a write cannot follow a
+      // final symlink out of WORKDIR and create a new external file.
+      try {
+        const stat = await fs.lstat(current);
+        if (stat.isSymbolicLink()) {
+          const target = await fs.readlink(current);
+          current = path.resolve(path.dirname(current), target);
+          continue;
+        }
+      } catch (lstatError) {
+        if ((lstatError as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw lstatError;
+        }
+      }
+
       const parent = path.dirname(current);
       if (parent === current) break; // reached filesystem root, nothing more to resolve
       current = parent;
@@ -43,6 +61,25 @@ async function resolveInWorkdir(relativePath: string): Promise<string> {
   }
 
   return resolved;
+}
+
+function logToolOutcome(
+  tool: string,
+  startedAt: number,
+  success: boolean,
+  error?: unknown
+) {
+  logger.info(
+    {
+      tool,
+      success,
+      durationMs: Date.now() - startedAt,
+      ...(error instanceof Error
+        ? { errorName: error.name, errorMessage: error.message }
+        : {}),
+    },
+    "tool execution completed"
+  );
 }
 
 export const readFileTool: ToolDefinition = {
@@ -58,8 +95,18 @@ export const readFileTool: ToolDefinition = {
   },
   requiresPermission: false,
   async execute(input: { path: string }): Promise<string> {
-    const filePath = await resolveInWorkdir(input.path);
-    return fs.readFile(filePath, "utf-8");
+    const startedAt = Date.now();
+    logger.debug({ tool: "read_file", input }, "tool input");
+    try {
+      const filePath = await resolveInWorkdir(input.path);
+      const result = await fs.readFile(filePath, "utf-8");
+      logger.debug({ tool: "read_file", input, output: result }, "tool output");
+      logToolOutcome("read_file", startedAt, true);
+      return result;
+    } catch (err) {
+      logToolOutcome("read_file", startedAt, false, err);
+      throw err;
+    }
   },
 };
 
@@ -80,12 +127,22 @@ export const listDirTool: ToolDefinition = {
   },
   requiresPermission: false,
   async execute(input: { path: string }): Promise<string> {
-    const dirPath = await resolveInWorkdir(input.path);
-    const entries = await fs.readdir(dirPath, { withFileTypes: true });
-    return entries
-      .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
-      .sort()
-      .join("\n");
+    const startedAt = Date.now();
+    logger.debug({ tool: "list_dir", input }, "tool input");
+    try {
+      const dirPath = await resolveInWorkdir(input.path);
+      const entries = await fs.readdir(dirPath, { withFileTypes: true });
+      const result = entries
+        .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
+        .sort()
+        .join("\n");
+      logger.debug({ tool: "list_dir", input, output: result }, "tool output");
+      logToolOutcome("list_dir", startedAt, true);
+      return result;
+    } catch (err) {
+      logToolOutcome("list_dir", startedAt, false, err);
+      throw err;
+    }
   },
 };
 
@@ -103,9 +160,19 @@ export const writeFileTool: ToolDefinition = {
   },
   requiresPermission: true,
   async execute(input: { path: string; content: string }): Promise<string> {
-    const filePath = await resolveInWorkdir(input.path);
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, input.content, "utf-8");
-    return `Wrote ${input.content.length} bytes to ${input.path}`;
+    const startedAt = Date.now();
+    logger.debug({ tool: "write_file", input }, "tool input");
+    try {
+      const filePath = await resolveInWorkdir(input.path);
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, input.content, "utf-8");
+      const result = `Wrote ${input.content.length} bytes to ${input.path}`;
+      logger.debug({ tool: "write_file", input, output: result }, "tool output");
+      logToolOutcome("write_file", startedAt, true);
+      return result;
+    } catch (err) {
+      logToolOutcome("write_file", startedAt, false, err);
+      throw err;
+    }
   },
 };
