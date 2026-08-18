@@ -8,6 +8,7 @@
   "type": "module",
   "scripts": {
     "start": "node --env-file=.env --import tsx src/cli/index.ts",
+    "eval": "node --env-file=.env --import tsx eval/run.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -4,3 +4,5 @@ dist/
 *.log
 .hs.json
 .mcp.json
+eval/results/
+!eval/results/README.md

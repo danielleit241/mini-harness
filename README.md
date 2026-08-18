@@ -83,14 +83,15 @@ for the containment details.
 
 ## Scripts
 
-| Script                 | Command                                              | Purpose                                      |
-| ---------------------- | ---------------------------------------------------- | -------------------------------------------- |
-| `npm start`            | `node --env-file=.env --import tsx src/cli/index.ts` | Run the REPL                                 |
-| `npm run typecheck`    | `tsc --noEmit`                                       | Type-check source and tests without emitting |
-| `npm test`             | `vitest run`                                         | Run the one-shot test suite                  |
-| `npm run test:watch`   | `vitest`                                             | Run Vitest in watch mode for development     |
-| `npm run format`       | `prettier --write .`                                 | Format the codebase                          |
-| `npm run format:check` | `prettier --check .`                                 | Check formatting                             |
+| Script                 | Command                                              | Purpose                                                                                  |
+| ---------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `npm start`            | `node --env-file=.env --import tsx src/cli/index.ts` | Run the REPL                                                                             |
+| `npm run eval`         | `node --env-file=.env --import tsx eval/run.ts`      | Run the mini-eval task set against live Bedrock — see [`eval/tasks.md`](./eval/tasks.md) |
+| `npm run typecheck`    | `tsc --noEmit`                                       | Type-check source and tests without emitting                                             |
+| `npm test`             | `vitest run`                                         | Run the one-shot test suite                                                              |
+| `npm run test:watch`   | `vitest`                                             | Run Vitest in watch mode for development                                                 |
+| `npm run format`       | `prettier --write .`                                 | Format the codebase                                                                      |
+| `npm run format:check` | `prettier --check .`                                 | Check formatting                                                                         |
 
 GitHub Actions runs typecheck, format:check, and test on every push and pull
 request.
@@ -117,6 +118,11 @@ src/
 tests/
   unit/               Security-boundary, retry, and config tests
   integration/        Mocked Bedrock agent-loop tests
+
+eval/
+  tasks.md            10-task mini-eval set with expected behavior per task
+  run.ts              Runs the task set against live Bedrock (npm run eval)
+  results/            Dated pass/fail notes from past eval runs
 ```
 
 See [`docs/system-architecture.md`](./docs/system-architecture.md) for how
@@ -126,11 +132,9 @@ breakdown.
 
 ## Documentation
 
-- [`docs/project-overview-pdr.md`](./docs/project-overview-pdr.md) — what this project is and why
 - [`docs/system-architecture.md`](./docs/system-architecture.md) — component design and data flow
 - [`docs/codebase-summary.md`](./docs/codebase-summary.md) — file-by-file reference
 - [`docs/code-standards.md`](./docs/code-standards.md) — conventions used in this codebase
-- [`docs/project-roadmap.md`](./docs/project-roadmap.md) — what's built and what's not
 
 ## Security notes
 
