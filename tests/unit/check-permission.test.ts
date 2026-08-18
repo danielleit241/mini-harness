@@ -6,17 +6,24 @@ vi.mock("../../src/core/prompt.js", () => ({
 }));
 
 import { ReadlineClosedError, ask } from "../../src/core/prompt.js";
-import { checkPermission } from "../../src/core/permissions.js";
+import {
+  checkPermission,
+  defaultPrompter,
+  setPermissionPrompter,
+} from "../../src/core/permissions.js";
 
 const mockedAsk = vi.mocked(ask);
 
+const fakePrompter = vi.fn<() => Promise<"yes" | "always" | "no">>();
+
+beforeEach(() => {
+  fakePrompter.mockReset();
+  setPermissionPrompter((toolName, input) => fakePrompter());
+});
+
 describe("checkPermission", () => {
-  beforeEach(() => {
-    mockedAsk.mockReset();
-  });
-
   it("allows once without caching a yes answer", async () => {
-    mockedAsk.mockResolvedValue("y");
+    fakePrompter.mockResolvedValue("yes");
 
     await expect(checkPermission("run_command", { command: "echo once" })).resolves.toBe(
       true
@@ -25,11 +32,11 @@ describe("checkPermission", () => {
       true
     );
 
-    expect(mockedAsk).toHaveBeenCalledTimes(2);
+    expect(fakePrompter).toHaveBeenCalledTimes(2);
   });
 
   it("caches always approvals by the exact tool and input", async () => {
-    mockedAsk.mockResolvedValue("a");
+    fakePrompter.mockResolvedValue("always");
 
     await expect(
       checkPermission("run_command", { command: "echo cached" })
@@ -41,26 +48,26 @@ describe("checkPermission", () => {
       checkPermission("run_command", { command: "echo different" })
     ).resolves.toBe(true);
 
-    expect(mockedAsk).toHaveBeenCalledTimes(2);
+    expect(fakePrompter).toHaveBeenCalledTimes(2);
   });
 
   it("denies no and unknown answers", async () => {
-    mockedAsk.mockResolvedValueOnce("n").mockResolvedValueOnce("maybe");
+    fakePrompter.mockResolvedValueOnce("no").mockResolvedValueOnce("no");
 
     await expect(checkPermission("write_file", { path: "a.txt" })).resolves.toBe(false);
     await expect(checkPermission("write_file", { path: "b.txt" })).resolves.toBe(false);
   });
 
-  it("fails safe when stdin is closed", async () => {
-    mockedAsk.mockRejectedValue(new ReadlineClosedError());
+  it("propagates a prompter rejection instead of swallowing it", async () => {
+    fakePrompter.mockRejectedValue(new Error("stdin closed"));
 
-    await expect(checkPermission("run_command", { command: "echo eof" })).resolves.toBe(
-      false
+    await expect(checkPermission("run_command", { command: "echo eof" })).rejects.toThrow(
+      "stdin closed"
     );
   });
 
   it("does not share an always approval across tool names", async () => {
-    mockedAsk.mockResolvedValue("a");
+    fakePrompter.mockResolvedValue("always");
 
     await expect(checkPermission("run_command", { value: "same-input" })).resolves.toBe(
       true
@@ -69,6 +76,31 @@ describe("checkPermission", () => {
       true
     );
 
-    expect(mockedAsk).toHaveBeenCalledTimes(2);
+    expect(fakePrompter).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("defaultPrompter", () => {
+  beforeEach(() => {
+    mockedAsk.mockReset();
+  });
+
+  it("returns 'no' (fail-safe deny) when stdin is closed", async () => {
+    mockedAsk.mockRejectedValue(new ReadlineClosedError());
+
+    await expect(defaultPrompter("run_command", { command: "echo eof" })).resolves.toBe(
+      "no"
+    );
+  });
+
+  it("maps y/a/other answers to yes/always/no", async () => {
+    mockedAsk.mockResolvedValueOnce("y");
+    await expect(defaultPrompter("run_command", {})).resolves.toBe("yes");
+
+    mockedAsk.mockResolvedValueOnce("a");
+    await expect(defaultPrompter("run_command", {})).resolves.toBe("always");
+
+    mockedAsk.mockResolvedValueOnce("n");
+    await expect(defaultPrompter("run_command", {})).resolves.toBe("no");
   });
 });

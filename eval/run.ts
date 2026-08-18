@@ -1,6 +1,6 @@
 import type { Message } from "@aws-sdk/client-bedrock-runtime";
 import { runAgent, type AgentEvent } from "../src/core/agent.js";
-import { rl } from "../src/core/prompt.js";
+import { closePrompt } from "../src/core/prompt.js";
 
 interface EvalTask {
   id: string;
@@ -63,7 +63,7 @@ async function main() {
   for (const task of TASKS) {
     await runTask(task);
   }
-  rl.close();
+  closePrompt();
 }
 
 main();

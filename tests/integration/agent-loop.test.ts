@@ -155,6 +155,63 @@ describe("runAgent", () => {
     ]);
   });
 
+  it("emits text_delta events forwarded from converse for every round, in order", async () => {
+    mockedConverse
+      .mockImplementationOnce(async (_messages, _system, _tools, onDelta) => {
+        onDelta?.("Reading");
+        onDelta?.(" the file");
+        return response(
+          [
+            {
+              toolUse: {
+                toolUseId: "tool-1",
+                name: "read_file",
+                input: { path: "README.md" },
+              },
+            },
+          ],
+          "tool_use"
+        );
+      })
+      .mockImplementationOnce(async (_messages, _system, _tools, onDelta) => {
+        onDelta?.("I read it.");
+        return response([{ text: "I read it." }]);
+      });
+    const messages: never[] = [];
+    const events: unknown[] = [];
+
+    await runAgent(messages, "inspect the readme", undefined, (e) => events.push(e), {
+      stream: true,
+    });
+
+    expect(events).toEqual([
+      { type: "text_delta", text: "Reading" },
+      { type: "text_delta", text: " the file" },
+      { type: "tool_round_start", iteration: 1, tools: ["read_file"] },
+      { type: "tool_result", iteration: 1, name: "read_file", status: "success" },
+      { type: "text_delta", text: "I read it." },
+      { type: "text", text: "I read it." },
+    ]);
+  });
+
+  it("does not pass onDelta to converse when stream is not requested, even with onEvent set", async () => {
+    // Regression guard: streaming must be an explicit opt-in. eval/run.ts
+    // passes an onEvent (for tool-progress logging) but never { stream: true }
+    // and must keep using ConverseCommand's IAM action/retry semantics, not
+    // ConverseStreamCommand's.
+    mockedConverse.mockResolvedValue(response([{ text: "hello" }]));
+    const messages: never[] = [];
+
+    await runAgent(messages, "hi", undefined, () => {});
+
+    expect(mockedConverse).toHaveBeenCalledWith(
+      messages,
+      expect.any(String),
+      expect.anything(),
+      undefined
+    );
+  });
+
   it("emits an error status tool_result event when a tool call fails", async () => {
     mockedConverse
       .mockResolvedValueOnce(
@@ -255,9 +312,10 @@ describe("runAgent", () => {
   });
 
   it("keeps a real runAgent+trimHistory loop under the turn cap with valid Bedrock history", async () => {
-    // Simulates the src/cli/index.ts wiring: run a real turn, record its
-    // start, trim, repeat — well past MAX_HISTORY_TURNS — using the actual
-    // runAgent (not a hand-built fixture) so a real desync bug would surface.
+    // Simulates the src/cli/hooks/use-agent-session.ts wiring: run a real
+    // turn, record its start, trim, repeat — well past MAX_HISTORY_TURNS —
+    // using the actual runAgent (not a hand-built fixture) so a real desync
+    // bug would surface.
     let messages: Message[] = [];
     let turnStarts: number[] = [];
     const totalTurns = MAX_HISTORY_TURNS + 5;

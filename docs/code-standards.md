@@ -11,7 +11,7 @@ These conventions describe the implemented `mini-harness` structure and the stan
 
 ## Module boundaries
 
-- `src/cli/index.ts` is the driving adapter: REPL control flow, startup warnings, and human-facing terminal output live there.
+- `src/cli/` is the driving adapter (an Ink/React app), layered by concern: `index.tsx` starts it and prints startup warnings; `App.tsx` is a thin composition root with no business logic; `hooks/` owns state and side effects (`use-agent-session.ts` for the conversation loop, `use-permission-bridge.ts` for wiring the permission prompter); `components/` are presentation-only (`TranscriptView.tsx`, `PermissionPrompt.tsx`, `PromptInput.tsx`); `services/ink-permission-prompter.ts` is the non-React bridge into `core/permissions.ts`.
 - `src/core/` contains framework-independent application behavior. It must not import the CLI or tests.
 - `src/core/tools/` contains tool contracts, registry/dispatch, filesystem tools, and shell execution. The agent calls `executeTool()` rather than individual tools.
 

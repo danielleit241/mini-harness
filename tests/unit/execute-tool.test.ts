@@ -90,4 +90,25 @@ describe("executeTool", () => {
       },
     });
   });
+
+  it("resolves to an error toolResult instead of rejecting when the permission prompter throws", async () => {
+    // Guards executeTool()'s contract (always resolve, never reject) against
+    // a prompter failure — e.g. the Ink UI's prompter denying with no
+    // listener registered, or here a non-ReadlineClosedError from ask().
+    mockedAsk.mockRejectedValue(new Error("prompt UI unavailable"));
+
+    const result = await executeTool(
+      "write_file",
+      { path: "a.txt", content: "x" },
+      "tool-6"
+    );
+
+    expect(result).toEqual({
+      toolResult: {
+        toolUseId: "tool-6",
+        status: "error",
+        content: [{ text: "Error: prompt UI unavailable" }],
+      },
+    });
+  });
 });

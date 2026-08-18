@@ -1,6 +1,8 @@
 import {
   BedrockRuntimeClient,
   ConverseCommand,
+  ConverseStreamCommand,
+  type ContentBlock,
   type Message,
   type Tool,
 } from "@aws-sdk/client-bedrock-runtime";
@@ -105,8 +107,11 @@ export interface ConverseResult {
 export async function converse(
   messages: Message[],
   systemPrompt: string,
-  tools: Tool[]
+  tools: Tool[],
+  onDelta?: (text: string) => void
 ): Promise<ConverseResult> {
+  if (onDelta) return converseStreaming(messages, systemPrompt, tools, onDelta);
+
   const command = new ConverseCommand({
     modelId: MODEL_ID,
     messages,
@@ -137,5 +142,123 @@ export async function converse(
   return {
     message: response.output.message,
     stopReason: response.stopReason,
+  };
+}
+
+// Per-block accumulation while a ConverseStreamCommand response is iterated:
+// text blocks buffer their text, toolUse blocks buffer the partial-JSON
+// input string; it's parsed once as a whole after the stream ends, never
+// per-delta.
+interface StreamBlock {
+  kind: "text" | "toolUse";
+  text: string;
+  toolUseId?: string;
+  name?: string;
+  inputJson: string;
+}
+
+async function converseStreaming(
+  messages: Message[],
+  systemPrompt: string,
+  tools: Tool[],
+  onDelta: (text: string) => void
+): Promise<ConverseResult> {
+  const command = new ConverseStreamCommand({
+    modelId: MODEL_ID,
+    messages,
+    system: [{ text: systemPrompt }],
+    toolConfig: tools.length > 0 ? { tools } : undefined,
+  });
+
+  const response = await withRetry(async () => {
+    try {
+      return await client.send(command);
+    } catch (err) {
+      const details = errorDetails(err);
+      logger.error(
+        {
+          errorName: details.name,
+          errorMessage: details.message,
+        },
+        "Bedrock ConverseStream request failed"
+      );
+      throw err;
+    }
+  });
+
+  if (!response.stream) {
+    throw new Error("Bedrock response had no stream in output");
+  }
+
+  const blocks = new Map<number, StreamBlock>();
+  let stopReason: string | undefined;
+
+  // Mid-stream failures (thrown while iterating) are not retried here: only
+  // the initial client.send() above is wrapped in withRetry.
+  for await (const event of response.stream) {
+    if (event.contentBlockStart) {
+      const { start, contentBlockIndex } = event.contentBlockStart;
+      if (contentBlockIndex === undefined) continue;
+      if (start?.toolUse) {
+        blocks.set(contentBlockIndex, {
+          kind: "toolUse",
+          text: "",
+          toolUseId: start.toolUse.toolUseId,
+          name: start.toolUse.name,
+          inputJson: "",
+        });
+      } else {
+        blocks.set(contentBlockIndex, { kind: "text", text: "", inputJson: "" });
+      }
+    } else if (event.contentBlockDelta) {
+      const { delta, contentBlockIndex } = event.contentBlockDelta;
+      if (contentBlockIndex === undefined) continue;
+      // contentBlockStart only carries a payload for tool_use/tool_result/image
+      // blocks; a plain text block's delta can arrive without one ever being
+      // seen, so create the block here too rather than assuming start always
+      // precedes delta.
+      let block = blocks.get(contentBlockIndex);
+      if (!block) {
+        block = { kind: delta?.toolUse ? "toolUse" : "text", text: "", inputJson: "" };
+        blocks.set(contentBlockIndex, block);
+      }
+      if (delta?.text !== undefined) {
+        block.text += delta.text;
+        onDelta(delta.text);
+      } else if (delta?.toolUse?.input !== undefined) {
+        block.inputJson += delta.toolUse.input;
+      }
+    } else if (event.messageStop) {
+      stopReason = event.messageStop.stopReason;
+    }
+  }
+
+  const content: ContentBlock[] = [];
+  for (const index of Array.from(blocks.keys()).sort((a, b) => a - b)) {
+    const block = blocks.get(index)!;
+    if (block.kind === "text") {
+      if (block.text) content.push({ text: block.text });
+    } else {
+      let input;
+      try {
+        input = block.inputJson ? JSON.parse(block.inputJson) : {};
+      } catch (err) {
+        throw new Error(
+          `Bedrock stream produced unparseable tool input JSON for "${block.name ?? "unknown_tool"}" (toolUseId ${block.toolUseId ?? "unknown"}): ${(err as Error).message}`
+        );
+      }
+      content.push({
+        toolUse: { toolUseId: block.toolUseId, name: block.name, input },
+      });
+    }
+  }
+
+  if (content.length === 0) {
+    throw new Error("Bedrock stream produced no content blocks");
+  }
+
+  return {
+    message: { role: "assistant", content },
+    stopReason,
   };
 }

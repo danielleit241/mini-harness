@@ -16,10 +16,10 @@ export interface HistoryState {
 }
 
 // `turnStarts[i]` is the index in `messages` where turn i's user message
-// begins (see src/cli/index.ts, which records this before each runAgent
-// call). A turn boundary always falls on a user message, so cutting at one
-// never splits a tool_use/tool_result pair mid-turn — those pairs live
-// entirely within a single turn's message span.
+// begins (see src/cli/hooks/use-agent-session.ts, which records this before
+// each runAgent call). A turn boundary always falls on a user message, so
+// cutting at one never splits a tool_use/tool_result pair mid-turn — those
+// pairs live entirely within a single turn's message span.
 export function trimHistory(
   messages: Message[],
   turnStarts: number[],

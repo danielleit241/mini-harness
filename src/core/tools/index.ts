@@ -14,6 +14,10 @@ const registry: ToolDefinition[] = [
   runCommandTool,
 ];
 
+function errorResult(toolUseId: string, text: string): ContentBlock {
+  return { toolResult: { toolUseId, status: "error", content: [{ text }] } };
+}
+
 // Converts the internal tool registry into the shape Bedrock's Converse API
 // expects in `toolConfig.tools`.
 export function toBedrockTools(): Tool[] {
@@ -35,52 +39,34 @@ export async function executeTool(
 ): Promise<ContentBlock> {
   const tool = registry.find((t) => t.name === name);
   if (!tool) {
-    return {
-      toolResult: {
-        toolUseId,
-        status: "error",
-        content: [{ text: `Unknown tool: ${name}` }],
-      },
-    };
+    return errorResult(toolUseId, `Unknown tool: ${name}`);
   }
 
   const validationError = validateToolInput(tool.inputSchema, input);
   if (validationError) {
     logger.info({ tool: name, reason: validationError }, "tool input rejected");
-    return {
-      toolResult: {
-        toolUseId,
-        status: "error",
-        content: [{ text: `Invalid input: ${validationError}` }],
-      },
-    };
+    return errorResult(toolUseId, `Invalid input: ${validationError}`);
   }
 
-  if (tool.requiresPermission) {
-    const allowed = await checkPermission(tool.name, input);
-    if (!allowed) {
-      return {
-        toolResult: {
-          toolUseId,
-          status: "error",
-          content: [{ text: "User denied permission for this action." }],
-        },
-      };
-    }
-  }
-
+  // checkPermission() and execute() share one try/catch: executeTool()'s
+  // contract (see comment above) is to always resolve to a ContentBlock,
+  // never reject — a prompter failure (e.g. the Ink UI unmounting mid-turn)
+  // must degrade to a denied tool call, not an uncaught rejection that
+  // agent.ts would otherwise turn into a whole-turn rollback.
   try {
+    if (tool.requiresPermission) {
+      const allowed = await checkPermission(tool.name, input);
+      if (!allowed) {
+        return errorResult(toolUseId, "User denied permission for this action.");
+      }
+    }
+
     const result = await tool.execute(input);
     return {
       toolResult: { toolUseId, status: "success", content: [{ text: result }] },
     };
   } catch (err) {
-    return {
-      toolResult: {
-        toolUseId,
-        status: "error",
-        content: [{ text: `Error: ${(err as Error).message}` }],
-      },
-    };
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResult(toolUseId, `Error: ${message}`);
   }
 }

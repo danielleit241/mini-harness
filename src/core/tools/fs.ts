@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { logger } from "../logger.js";
+import { logToolOutcome } from "./log.js";
 import type { ToolDefinition } from "./types.js";
 
 const WORKDIR = process.cwd();
@@ -61,25 +62,6 @@ export async function resolveInWorkdir(relativePath: string): Promise<string> {
   }
 
   return resolved;
-}
-
-function logToolOutcome(
-  tool: string,
-  startedAt: number,
-  success: boolean,
-  error?: unknown
-) {
-  logger.info(
-    {
-      tool,
-      success,
-      durationMs: Date.now() - startedAt,
-      ...(error instanceof Error
-        ? { errorName: error.name, errorMessage: error.message }
-        : {}),
-    },
-    "tool execution completed"
-  );
 }
 
 export const readFileTool: ToolDefinition = {

@@ -47,9 +47,10 @@ you have available with the AWS CLI or SDK against the
 npm start
 ```
 
-This runs `node --env-file=.env --import tsx src/cli/index.ts` — a REPL that
-reads a line, sends it to the agent loop, and prints the reply. Type
-`/exit` or press Ctrl+D to quit.
+This runs `node --env-file=.env --import tsx src/cli/index.tsx` — an Ink
+(React-based terminal UI) REPL that reads a line, sends it to the agent
+loop, and streams the model's reply as it arrives instead of waiting for
+the full response. Type `/exit` or press Ctrl+D to quit.
 
 Structured core audit logs are emitted as JSON lines by pino. Conversational
 REPL output remains plain terminal text; at the default `info` level, logs
@@ -57,15 +58,18 @@ contain tool names, outcomes, timing, permission decisions, and retry/error
 metadata, not file or conversation payloads.
 
 The agent may ask for permission before writing files or running shell
-commands:
+commands, via a select menu ("No" listed and highlighted first, so an
+accidental Enter denies rather than approves):
 
 ```
 [permission] agent wants to run "write_file" with input:
 { "path": "notes.txt", "content": "..." }
-  Allow? [y]es once / [a]lways this exact call / [n]o:
+> No
+  Yes, once
+  Always (this exact call)
 ```
 
-`a` (always) only re-approves an _identical_ future call (same tool name +
+"Always" only re-approves an _identical_ future call (same tool name +
 same JSON input) — it does not grant blanket approval for the tool.
 
 ## Available tools
@@ -83,15 +87,15 @@ for the containment details.
 
 ## Scripts
 
-| Script                 | Command                                              | Purpose                                                                                  |
-| ---------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `npm start`            | `node --env-file=.env --import tsx src/cli/index.ts` | Run the REPL                                                                             |
-| `npm run eval`         | `node --env-file=.env --import tsx eval/run.ts`      | Run the mini-eval task set against live Bedrock — see [`eval/tasks.md`](./eval/tasks.md) |
-| `npm run typecheck`    | `tsc --noEmit`                                       | Type-check source and tests without emitting                                             |
-| `npm test`             | `vitest run`                                         | Run the one-shot test suite                                                              |
-| `npm run test:watch`   | `vitest`                                             | Run Vitest in watch mode for development                                                 |
-| `npm run format`       | `prettier --write .`                                 | Format the codebase                                                                      |
-| `npm run format:check` | `prettier --check .`                                 | Check formatting                                                                         |
+| Script                 | Command                                               | Purpose                                                                                  |
+| ---------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `npm start`            | `node --env-file=.env --import tsx src/cli/index.tsx` | Run the Ink REPL                                                                         |
+| `npm run eval`         | `node --env-file=.env --import tsx eval/run.ts`       | Run the mini-eval task set against live Bedrock — see [`eval/tasks.md`](./eval/tasks.md) |
+| `npm run typecheck`    | `tsc --noEmit`                                        | Type-check source and tests without emitting                                             |
+| `npm test`             | `vitest run`                                          | Run the one-shot test suite                                                              |
+| `npm run test:watch`   | `vitest`                                              | Run Vitest in watch mode for development                                                 |
+| `npm run format`       | `prettier --write .`                                  | Format the codebase                                                                      |
+| `npm run format:check` | `prettier --check .`                                  | Check formatting                                                                         |
 
 GitHub Actions runs typecheck, format:check, and test on every push and pull
 request.
@@ -101,19 +105,30 @@ request.
 ```
 src/
   cli/
-    index.ts          REPL entry point and user-facing output
+    index.tsx                     Entry point: renders the Ink app
+    App.tsx                       Composition root only, no business logic
+    components/
+      TranscriptView.tsx          Completed lines, tool-progress lines, streaming text
+      PermissionPrompt.tsx        Yes/always/no menu for a pending permission request
+      PromptInput.tsx             The "> " input row
+    hooks/
+      use-agent-session.ts        Owns Bedrock history, runAgent(), history trimming
+      use-permission-bridge.ts    Registers the Ink prompter, holds pending-request state
+    services/
+      ink-permission-prompter.ts  Bridges checkPermission() into the rendered prompt
   core/
-    agent.ts          Tool-use loop (runAgent)
-    bedrock.ts        Bedrock Converse API wrapper and retry policy
+    agent.ts          Tool-use loop (runAgent), forwards text_delta when streaming
+    bedrock.ts        Bedrock Converse/ConverseStream wrapper and retry policy
     config.ts         Startup configuration validation
     logger.ts         Structured pino audit logger
-    permissions.ts    Permission gate for mutating tools
-    prompt.ts         Shared readline interface
+    permissions.ts    Permission gate for mutating tools (pluggable prompter)
+    prompt.ts         Lazily-created readline interface, used by the default prompter
     tools/
       types.ts        ToolDefinition interface
       index.ts        Tool registry + dispatch
       fs.ts           read_file / list_dir / write_file
       bash.ts         run_command
+      log.ts          Shared tool-outcome audit logging
 
 tests/
   unit/               Security-boundary, retry, and config tests

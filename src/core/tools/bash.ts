@@ -1,5 +1,6 @@
 import { exec, type ChildProcess } from "node:child_process";
 import { logger } from "../logger.js";
+import { logToolOutcome } from "./log.js";
 import type { ToolDefinition } from "./types.js";
 
 const TIMEOUT_MS = 30_000;
@@ -84,14 +85,11 @@ export const runCommandTool: ToolDefinition = {
         ? `Command failed: ${error.message}\n${output}`.trim()
         : output.trim() || "(no output)";
     logger.debug({ tool: "run_command", input, output: result }, "tool output");
-    logger.info(
-      {
-        tool: "run_command",
-        success,
-        durationMs: Date.now() - startedAt,
-        ...(error ? { errorName: error.name, errorMessage: error.message } : {}),
-      },
-      "tool execution completed"
+    logToolOutcome(
+      "run_command",
+      startedAt,
+      success,
+      error ?? (timedOut ? new Error(`timed out after ${TIMEOUT_MS / 1000}s`) : undefined)
     );
     return result;
   },

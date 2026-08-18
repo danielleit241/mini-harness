@@ -6,7 +6,9 @@ import { toBedrockTools, executeTool } from "./tools/index.js";
 export const DEFAULT_SYSTEM_PROMPT = `You are a coding assistant running in a terminal, with access to tools \
 for reading/writing files and running shell commands in the current working directory. \
 Use tools when you need information you don't already have or need to make a change; \
-otherwise just answer directly. Be concise.`;
+otherwise just answer directly. Be concise. \
+If a request doesn't say which file, bug, or command it means, ask a clarifying \
+question instead of guessing or exploring speculatively to find one.`;
 
 const TOOLS = toBedrockTools();
 
@@ -17,6 +19,7 @@ const MAX_TOOL_ITERATIONS = 25;
 export type AgentEvent =
   | { type: "tool_round_start"; iteration: number; tools: string[] }
   | { type: "tool_result"; iteration: number; name: string; status: "success" | "error" }
+  | { type: "text_delta"; text: string }
   | { type: "text"; text: string };
 
 export type AgentEventHandler = (event: AgentEvent) => void;
@@ -31,11 +34,22 @@ function emit(onEvent: AgentEventHandler | undefined, event: AgentEvent): void {
   }
 }
 
+export interface RunAgentOptions {
+  // Opt-in, not inferred from onEvent's presence: eval/run.ts also passes an
+  // onEvent (for tool_round_start/tool_result logging) but must keep using
+  // ConverseCommand — ConverseStreamCommand needs a different IAM action
+  // (bedrock:InvokeModelWithResponseStream) and moves mid-stream failures
+  // outside converse()'s request-level retry. Only a caller that actually
+  // renders text_delta (the Ink CLI) should turn this on.
+  stream?: boolean;
+}
+
 export async function runAgent(
   messages: Message[],
   userInput: string,
   systemPrompt: string = DEFAULT_SYSTEM_PROMPT,
-  onEvent?: AgentEventHandler
+  onEvent?: AgentEventHandler,
+  options: RunAgentOptions = {}
 ): Promise<string> {
   // Bedrock requires messages to strictly alternate user/assistant. If
   // anything below throws partway through a tool-use round, the array can
@@ -47,7 +61,16 @@ export async function runAgent(
 
   try {
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-      const { message, stopReason } = await converse(messages, systemPrompt, TOOLS);
+      const onDelta =
+        options.stream && onEvent
+          ? (text: string) => emit(onEvent, { type: "text_delta", text })
+          : undefined;
+      const { message, stopReason } = await converse(
+        messages,
+        systemPrompt,
+        TOOLS,
+        onDelta
+      );
       messages.push(message);
 
       // Narrows out blocks without a toolUse so downstream code never
