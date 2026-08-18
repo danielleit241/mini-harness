@@ -1,8 +1,10 @@
 import type { ContentBlock, Tool } from "@aws-sdk/client-bedrock-runtime";
 import type { DocumentType } from "@smithy/types";
+import { logger } from "../logger.js";
 import { checkPermission } from "../permissions.js";
 import { readFileTool, listDirTool, writeFileTool } from "./fs.js";
 import { runCommandTool } from "./bash.js";
+import { validateToolInput } from "./validate.js";
 import type { ToolDefinition } from "./types.js";
 
 const registry: ToolDefinition[] = [
@@ -38,6 +40,18 @@ export async function executeTool(
         toolUseId,
         status: "error",
         content: [{ text: `Unknown tool: ${name}` }],
+      },
+    };
+  }
+
+  const validationError = validateToolInput(tool.inputSchema, input);
+  if (validationError) {
+    logger.info({ tool: name, reason: validationError }, "tool input rejected");
+    return {
+      toolResult: {
+        toolUseId,
+        status: "error",
+        content: [{ text: `Invalid input: ${validationError}` }],
       },
     };
   }

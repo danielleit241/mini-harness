@@ -10,6 +10,8 @@ vi.mock("../../src/core/prompt.js", () => ({
 
 import { converse } from "../../src/core/bedrock.js";
 import { runAgent } from "../../src/core/agent.js";
+import { trimHistory, MAX_HISTORY_TURNS } from "../../src/core/history.js";
+import type { Message } from "@aws-sdk/client-bedrock-runtime";
 
 const mockedConverse = vi.mocked(converse);
 
@@ -70,6 +72,47 @@ describe("runAgent", () => {
 
     await expect(runAgent(messages, "loop forever")).rejects.toThrow("tool-call limit");
     expect(mockedConverse).toHaveBeenCalledTimes(25);
+    expect(messages).toEqual(before);
+  });
+
+  it("rolls back the whole turn when a tool call is missing a toolUseId", async () => {
+    mockedConverse.mockResolvedValueOnce(
+      response(
+        [{ toolUse: { name: "read_file", input: { path: "README.md" } } }],
+        "tool_use"
+      )
+    );
+    const messages = [{ role: "assistant", content: [{ text: "previous" }] }] as never[];
+    const before = structuredClone(messages);
+
+    await expect(runAgent(messages, "call with no id")).rejects.toThrow(
+      "missing a toolUseId"
+    );
+    expect(messages).toEqual(before);
+  });
+
+  it("runs no tool in the round when a later call is missing a toolUseId", async () => {
+    mockedConverse.mockResolvedValueOnce(
+      response(
+        [
+          {
+            toolUse: {
+              toolUseId: "tool-1",
+              name: "write_file",
+              input: { path: "should-not-be-written.txt", content: "x" },
+            },
+          },
+          { toolUse: { name: "read_file", input: { path: "README.md" } } },
+        ],
+        "tool_use"
+      )
+    );
+    const messages = [{ role: "assistant", content: [{ text: "previous" }] }] as never[];
+    const before = structuredClone(messages);
+
+    await expect(runAgent(messages, "two tools, second missing id")).rejects.toThrow(
+      "missing a toolUseId"
+    );
     expect(messages).toEqual(before);
   });
 
@@ -209,5 +252,65 @@ describe("runAgent", () => {
 
     expect(resultWith).toBe(resultWithout);
     expect(withHandler).toEqual(withoutHandler);
+  });
+
+  it("keeps a real runAgent+trimHistory loop under the turn cap with valid Bedrock history", async () => {
+    // Simulates the src/cli/index.ts wiring: run a real turn, record its
+    // start, trim, repeat — well past MAX_HISTORY_TURNS — using the actual
+    // runAgent (not a hand-built fixture) so a real desync bug would surface.
+    let messages: Message[] = [];
+    let turnStarts: number[] = [];
+    const totalTurns = MAX_HISTORY_TURNS + 5;
+    const toolRoundTurn = 3;
+
+    for (let i = 0; i < totalTurns; i++) {
+      if (i === toolRoundTurn) {
+        mockedConverse
+          .mockResolvedValueOnce(
+            response(
+              [
+                {
+                  toolUse: {
+                    toolUseId: `tool-${i}`,
+                    name: "read_file",
+                    input: { path: "README.md" },
+                  },
+                },
+              ],
+              "tool_use"
+            )
+          )
+          .mockResolvedValueOnce(response([{ text: `reply ${i}` }]));
+      } else {
+        mockedConverse.mockResolvedValueOnce(response([{ text: `reply ${i}` }]));
+      }
+
+      const turnStart = messages.length;
+      const reply = await runAgent(messages, `turn ${i}`);
+      expect(reply).toBe(`reply ${i}`);
+      turnStarts.push(turnStart);
+      ({ messages, turnStarts } = trimHistory(messages, turnStarts, MAX_HISTORY_TURNS));
+    }
+
+    expect(turnStarts).toHaveLength(MAX_HISTORY_TURNS);
+    for (const start of turnStarts) {
+      expect(messages[start].role).toBe("user");
+    }
+    expect(messages[messages.length - 1].role).toBe("assistant");
+
+    // No orphaned toolResult without its matching toolUse anywhere in the
+    // retained window.
+    const pendingToolUseIds = new Set<string>();
+    for (const message of messages) {
+      for (const block of message.content ?? []) {
+        if ("toolUse" in block && block.toolUse?.toolUseId) {
+          pendingToolUseIds.add(block.toolUse.toolUseId);
+        }
+        if ("toolResult" in block && block.toolResult?.toolUseId) {
+          expect(pendingToolUseIds.has(block.toolResult.toolUseId)).toBe(true);
+          pendingToolUseIds.delete(block.toolResult.toolUseId);
+        }
+      }
+    }
   });
 });

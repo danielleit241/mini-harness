@@ -64,6 +64,19 @@ export async function runAgent(
         );
         emit(onEvent, { type: "tool_round_start", iteration: i + 1, tools: toolNames });
 
+        // toolUseId correlates a result back to its call; without it there is
+        // no valid toolResult to send back. Check every call in the round
+        // before running any of them — checking inside the loop below would
+        // let an earlier tool (e.g. write_file) execute a real side effect
+        // before a later one in the same round fails this check, and turn
+        // rollback can't undo a file write or shell command that already ran.
+        const missingId = toolUses.find((use) => !use.toolUseId);
+        if (missingId) {
+          throw new Error(
+            `Tool call for "${missingId.name ?? "unknown_tool"}" is missing a toolUseId.`
+          );
+        }
+
         // Sequential, not Promise.all: permission prompts share one readline
         // interface and are clearer to the user one at a time.
         const resultBlocks = [];

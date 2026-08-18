@@ -1,9 +1,12 @@
 import type { Message } from "@aws-sdk/client-bedrock-runtime";
 import { runAgent, type AgentEvent } from "../core/agent.js";
 import { validateConfig } from "../core/config.js";
+import { estimateContextChars, trimHistory, MAX_HISTORY_TURNS } from "../core/history.js";
+import { logger } from "../core/logger.js";
 import { ask, rl, ReadlineClosedError } from "../core/prompt.js";
 
-const messages: Message[] = [];
+let messages: Message[] = [];
+let turnStarts: number[] = [];
 
 function onAgentEvent(event: AgentEvent): void {
   if (event.type === "tool_round_start") {
@@ -32,8 +35,26 @@ async function main() {
     if (!input) continue;
     if (input === "/exit") break;
 
+    // Captured before the `await` below; safe only because turns run
+    // strictly one at a time in this loop — nothing here reassigns
+    // `messages`/`turnStarts` until the current turn finishes.
+    const turnStart = messages.length;
     try {
       const reply = await runAgent(messages, input, undefined, onAgentEvent);
+      turnStarts.push(turnStart);
+      ({ messages, turnStarts } = trimHistory(messages, turnStarts, MAX_HISTORY_TURNS));
+      // estimateContextChars stringifies the whole retained history; only
+      // pay for that when debug logging is actually on.
+      if (logger.isLevelEnabled("debug")) {
+        logger.debug(
+          {
+            turns: turnStarts.length,
+            messages: messages.length,
+            approxContextChars: estimateContextChars(messages),
+          },
+          "history size"
+        );
+      }
       console.log(`\n${reply}\n`);
     } catch (err) {
       console.error(`\n[error] ${(err as Error).message}\n`);
